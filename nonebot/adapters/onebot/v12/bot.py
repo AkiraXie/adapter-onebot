@@ -6,16 +6,20 @@ FrontMatter:
 """
 
 import re
-from typing import Any, Union, Callable
+from typing_extensions import override
+from typing import TYPE_CHECKING, Any, Union, Optional
 
-from nonebot.typing import overrides
 from nonebot.message import handle_event
+from nonebot.compat import model_dump, type_validate_python
 
 from nonebot.adapters import Bot as BaseBot
 
 from .utils import log
 from .message import Message, MessageSegment
-from .event import Event, Reply, MessageEvent
+from .event import Event, Reply, BotStatus, MessageEvent
+
+if TYPE_CHECKING:
+    from .adapter import Adapter
 
 
 def _check_reply(bot: "Bot", event: MessageEvent) -> None:
@@ -26,32 +30,35 @@ def _check_reply(bot: "Bot", event: MessageEvent) -> None:
         event: MessageEvent 对象
     """
     try:
-        index = list(map(lambda x: x.type == "reply", event.message)).index(True)
+        index = [x.type == "reply" for x in event.message].index(True)
     except ValueError:
         return
 
     msg_seg = event.message[index]
 
     try:
-        event.reply = Reply.parse_obj(msg_seg.data)
-        # event.reply = Reply.parse_obj(
-        #     await bot.get_msg(message_id=msg_seg.data["id"])
-        # )
+        event.reply = type_validate_python(Reply, msg_seg.data)
     except Exception as e:
-        log("WARNING", f"Error when getting message reply info: {repr(e)}", e)
+        log("WARNING", f"Error when getting message reply info: {e!r}", e)
         return
 
     # ensure string comparation
-    if str(event.reply.user_id) == str(event.self_id):
+    if str(event.reply.user_id) == str(event.self.user_id):
         event.to_me = True
-
     del event.message[index]
-    if len(event.message) > index and event.message[index].type == "mention":
+
+    if (
+        len(event.message) > index
+        and event.message[index].type == "mention"
+        and event.message[index].data.get("user_id") == str(event.reply.user_id)
+    ):
         del event.message[index]
+
     if len(event.message) > index and event.message[index].type == "text":
         event.message[index].data["text"] = event.message[index].data["text"].lstrip()
         if not event.message[index].data["text"]:
             del event.message[index]
+
     if not event.message:
         event.message.append(MessageSegment.text(""))
 
@@ -77,7 +84,7 @@ def _check_to_me(bot: "Bot", event: MessageEvent) -> None:
         def _is_mention_me_seg(segment: MessageSegment) -> bool:
             return (
                 segment.type == "mention"
-                and str(segment.data.get("user_id", "")) == event.self_id
+                and str(segment.data.get("user_id", "")) == event.self.user_id
             )
 
         # check the first segment
@@ -128,7 +135,7 @@ def _check_nickname(bot: "Bot", event: MessageEvent) -> None:
     if first_msg_seg.type != "text":
         return
 
-    nicknames = set(filter(lambda n: n, bot.config.nickname))
+    nicknames = {re.escape(n) for n in bot.config.nickname}
     if not nicknames:
         return
 
@@ -150,7 +157,7 @@ async def send(
     **params: Any,
 ) -> Any:
     """默认回复消息处理函数。"""
-    event_dict = event.dict()
+    event_dict = model_dump(event)
 
     params.setdefault("detail_type", event_dict["detail_type"])
 
@@ -180,20 +187,31 @@ async def send(
 
 
 class Bot(BaseBot):
+    adapter: "Adapter"
 
-    send_handler: Callable[
-        ["Bot", Event, Union[str, Message, MessageSegment]], Any
-    ] = send
+    def __init__(
+        self,
+        adapter: "Adapter",
+        self_id: str,
+        impl: str,
+        platform: str,
+        status: Optional[BotStatus] = None,
+    ) -> None:
+        super().__init__(adapter, self_id)
+        self.impl = impl
+        self.platform = platform
+        self.status = status
 
     async def handle_event(self, event: Event) -> None:
         """处理收到的事件。"""
         if isinstance(event, MessageEvent):
+            event.message.reduce()
             _check_reply(self, event)
             _check_to_me(self, event)
             _check_nickname(self, event)
         await handle_event(self, event)
 
-    @overrides(BaseBot)
+    @override
     async def send(
         self, event: Event, message: Union[str, Message, MessageSegment], **kwargs: Any
     ) -> Any:
@@ -204,7 +222,8 @@ class Bot(BaseBot):
             message: 要发送的消息
             at_sender (bool): 是否 @ 事件主体
             reply_message (bool): 是否回复事件消息
-            kwargs: 其他参数，可以与 {ref}`nonebot.adapters.onebot.v12.adapter.Adapter.custom_send` 配合使用
+            kwargs: 其他参数，可以与
+                {ref}`nonebot.adapters.onebot.v12.adapter.Adapter.custom_send` 配合使用
 
         返回:
             API 调用返回数据
@@ -214,4 +233,5 @@ class Bot(BaseBot):
             NetworkError: 网络错误
             ActionFailed: API 调用失败
         """
-        return await self.__class__.send_handler(self, event, message, **kwargs)
+        send_handler = self.adapter.get_send(self.impl, self.platform)
+        return await send_handler(self, event, message, **kwargs)

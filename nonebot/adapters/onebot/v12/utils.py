@@ -5,10 +5,13 @@ FrontMatter:
     description: onebot.v12.utils 模块
 """
 
-from typing import TypeVar
+import datetime
 from base64 import b64encode
+from functools import partial
+from typing import Any, TypeVar
+from typing_extensions import override
 
-from nonebot.typing import overrides
+from nonebot.compat import PYDANTIC_V2
 from nonebot.utils import DataclassEncoder, logger_wrapper
 
 T = TypeVar("T")
@@ -42,8 +45,35 @@ def flattened_to_nested(data: T) -> T:
 class CustomEncoder(DataclassEncoder):
     """OneBot V12 使用的 `JSONEncoder`"""
 
-    @overrides(DataclassEncoder)
+    @override
     def default(self, o):
         if isinstance(o, bytes):
             return b64encode(o).decode()
-        return super(CustomEncoder, self).default(o)
+        return super().default(o)
+
+
+def timestamp(obj: datetime.datetime):
+    return obj.timestamp()
+
+
+# https://12.onebot.dev/connect/data-protocol/basic-types/
+msgpack_type_encoders = {
+    datetime.datetime: timestamp,
+}
+
+if PYDANTIC_V2:
+    from pydantic_core import to_jsonable_python
+
+    def msgpack_encoder(obj: Any):
+        for type_, encoder in msgpack_type_encoders.items():
+            if isinstance(obj, type_):
+                return encoder(obj)
+        return to_jsonable_python(obj)
+
+else:
+    from pydantic.json import custom_pydantic_encoder
+
+    msgpack_encoder = partial(
+        custom_pydantic_encoder,
+        msgpack_type_encoders,  # type: ignore
+    )

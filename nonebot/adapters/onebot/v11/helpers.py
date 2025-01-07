@@ -10,17 +10,17 @@ import asyncio
 from enum import IntEnum, auto
 from collections import defaultdict
 from asyncio import get_running_loop
-from typing import Any, Dict, List, Union, Optional, DefaultDict
+from typing import Any, Union, Optional
 
 from nonebot.matcher import Matcher
 from nonebot.params import Depends, EventMessage
 
 from .bot import Bot
+from .event import Event
 from .message import Message, MessageSegment
-from .event import Event, MessageEvent, GroupMessageEvent
 
 
-def extract_image_urls(message: Message) -> List[str]:
+def extract_image_urls(message: Message) -> list[str]:
     """提取消息中的图片链接
 
     参数:
@@ -45,7 +45,7 @@ def ImageURLs(prompt: Optional[str] = None):
 
     async def dependency(
         matcher: Matcher, message: Message = EventMessage()
-    ) -> List[str]:
+    ) -> list[str]:
         urls = extract_image_urls(message)
         if not urls and prompt:
             await matcher.finish(prompt)
@@ -57,7 +57,7 @@ def ImageURLs(prompt: Optional[str] = None):
 NUMBERS_REGEXP = re.compile(r"[+-]?(\d*\.?\d+|\d+\.?\d*)")
 
 
-def extract_numbers(message: Message) -> List[float]:
+def extract_numbers(message: Message) -> list[float]:
     """提取消息中的数字
 
     参数:
@@ -72,7 +72,7 @@ def extract_numbers(message: Message) -> List[float]:
     ]
 
 
-def Numbers(prompt: Optional[str] = None) -> List[float]:
+def Numbers(prompt: Optional[str] = None) -> list[float]:
     """提取消息中的数字`extract_numbers`的依赖注入版本
 
     参数:
@@ -81,7 +81,7 @@ def Numbers(prompt: Optional[str] = None) -> List[float]:
 
     async def dependency(
         matcher: Matcher, message: Message = EventMessage()
-    ) -> List[float]:
+    ) -> list[float]:
         numbers = extract_numbers(message)
         if not numbers and prompt:
             await matcher.finish(prompt)
@@ -228,7 +228,7 @@ def Cooldown(
     isolate_level: CooldownIsolateLevel = CooldownIsolateLevel.USER,
     parallel: int = 1,
 ) -> None:
-    """依赖注入形式的命令冷却
+    """依赖注入形式的事件冷却
 
     用法:
         ```python
@@ -238,9 +238,9 @@ def Cooldown(
         ```
 
     参数:
-        cooldown: 命令冷却间隔
-        prompt: 当命令冷却时发送给用户的提示消息
-        isolate_level: 命令冷却的隔离级别, 参考 `CooldownIsolateLevel`
+        cooldown: 冷却间隔
+        prompt: 当触发冷却时发送给用户的提示消息
+        isolate_level: 事件冷却的隔离级别, 参考 `CooldownIsolateLevel`
         parallel: 并行执行的命令数量
     """
     if not isinstance(isolate_level, CooldownIsolateLevel):
@@ -248,7 +248,7 @@ def Cooldown(
             f"invalid isolate level: {isolate_level!r}, "
             "isolate level must use provided enumerate value."
         )
-    running: DefaultDict[str, int] = defaultdict(lambda: parallel)
+    running: defaultdict[str, int] = defaultdict(lambda: parallel)
 
     def increase(key: str, value: int = 1):
         running[key] += value
@@ -256,25 +256,28 @@ def Cooldown(
             del running[key]
         return
 
-    async def dependency(matcher: Matcher, event: MessageEvent):
+    async def dependency(matcher: Matcher, event: Event):
         loop = get_running_loop()
 
+        group_id = getattr(event, "group_id", None)
+        if group_id:
+            group_id = str(group_id)
+        try:
+            user_id = event.get_user_id()
+        except Exception:
+            user_id = None
+
         if isolate_level is CooldownIsolateLevel.GROUP:
-            key = str(
-                event.group_id
-                if isinstance(event, GroupMessageEvent)
-                else event.user_id,
-            )
+            key = group_id or user_id
         elif isolate_level is CooldownIsolateLevel.USER:
-            key = str(event.user_id)
+            key = user_id
         elif isolate_level is CooldownIsolateLevel.GROUP_USER:
-            key = (
-                f"{event.group_id}_{event.user_id}"
-                if isinstance(event, GroupMessageEvent)
-                else str(event.user_id)
-            )
+            key = f"{group_id}_{user_id}" if group_id else user_id
         else:
             key = CooldownIsolateLevel.GLOBAL.name
+
+        if not key:
+            return
 
         if running[key] <= 0:
             await matcher.finish(prompt)
@@ -304,9 +307,9 @@ async def autorevoke_send(
         revoke_interval: 撤回消息的间隔时间, 单位为秒
 
     返回:
-        asyncio.TimerHandle: [`TimerHandle`](https://docs.python.org/zh-cn/3/library/asyncio-eventloop.html#asyncio.TimerHandle) 对象, 可以用来取消定时撤回任务
-    """
-    message_data: Dict[str, Any] = await bot.send(
+        [`TimerHandle`](https://docs.python.org/zh-cn/3/library/asyncio-eventloop.html#asyncio.TimerHandle) 对象, 可以用来取消定时撤回任务
+    """  # noqa: E501
+    message_data: dict[str, Any] = await bot.send(
         event, message, at_sender=at_sender, **kwargs
     )
     message_id: int = message_data["message_id"]

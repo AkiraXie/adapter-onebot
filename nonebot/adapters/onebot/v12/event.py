@@ -7,77 +7,124 @@ FrontMatter:
 
 from copy import deepcopy
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Dict, Literal, Optional
+from typing_extensions import override
+from typing import Any, Literal, Optional
 
-from nonebot.typing import overrides
+from pydantic import BaseModel
 from nonebot.utils import escape_tag
-from pydantic import Extra, BaseModel, root_validator
+from nonebot.compat import PYDANTIC_V2, ConfigDict, model_dump
 
 from nonebot.adapters import Event as BaseEvent
+from nonebot.adapters.onebot.compat import model_validator
+from nonebot.adapters.onebot.utils import highlight_rich_message
 
 from .message import Message
 from .exception import NoLogException
 
-if TYPE_CHECKING:
-    from .bot import Bot
 
-
-class Event(BaseEvent, extra=Extra.allow):
+class Event(BaseEvent):
     """OneBot V12 协议事件，字段与 OneBot 一致
 
     参考文档：[OneBot 文档](https://12.1bot.dev)
     """
 
     id: str
-    impl: str
-    platform: str
-    self_id: str
     time: datetime
     type: Literal["message", "notice", "request", "meta"]
     detail_type: str
     sub_type: str
 
-    @overrides(BaseEvent)
+    @override
     def get_type(self) -> str:
         return self.type
 
-    @overrides(BaseEvent)
+    @override
     def get_event_name(self) -> str:
         return ".".join(filter(None, (self.type, self.detail_type, self.sub_type)))
 
-    @overrides(BaseEvent)
+    @override
     def get_event_description(self) -> str:
-        return escape_tag(str(self.dict()))
+        return escape_tag(str(model_dump(self)))
 
-    @overrides(BaseEvent)
+    @override
     def get_message(self) -> Message:
         raise ValueError("Event has no message!")
 
-    @overrides(BaseEvent)
+    @override
     def get_user_id(self) -> str:
         raise ValueError("Event has no user_id!")
 
-    @overrides(BaseEvent)
+    @override
     def get_session_id(self) -> str:
         raise ValueError("Event has no session_id!")
 
-    @overrides(BaseEvent)
+    @override
     def is_tome(self) -> bool:
         return False
 
 
-class Status(BaseModel, extra=Extra.allow):
-    good: bool
+class BotSelf(BaseModel):
+    """机器人自身标识"""
+
+    platform: str
+    user_id: str
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config(ConfigDict):
+            extra = "allow"
+
+
+class BotStatus(BaseModel):
+    """机器人的状态"""
+
+    self: BotSelf
     online: bool
 
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
 
-class Reply(BaseModel, extra=Extra.allow):
+        class Config(ConfigDict):
+            extra = "allow"
+
+
+class Status(BaseModel):
+    """运行状态"""
+
+    good: bool
+    bots: list[BotStatus]
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config(ConfigDict):
+            extra = "allow"
+
+
+class Reply(BaseModel):
     message_id: str
     user_id: str
 
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config(ConfigDict):
+            extra = "allow"
+
+
+class BotEvent(Event):
+    """包含 self 字段的机器人事件"""
+
+    self: BotSelf
+
 
 # Message Event
-class MessageEvent(Event):
+class MessageEvent(BotEvent):
     """消息事件"""
 
     type: Literal["message"]
@@ -87,7 +134,7 @@ class MessageEvent(Event):
     alt_message: str
     user_id: str
 
-    to_me = False
+    to_me: bool = False
     """
     :说明: 消息是否与机器人有关
 
@@ -100,25 +147,25 @@ class MessageEvent(Event):
     :类型: ``Optional[Reply]``
     """
 
-    @root_validator(pre=True, allow_reuse=True)
-    def check_message(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+    @model_validator(mode="before")
+    def check_message(cls, values: dict[str, Any]) -> dict[str, Any]:
         if "message" in values:
             values["original_message"] = deepcopy(values["message"])
         return values
 
-    @overrides(Event)
+    @override
     def get_message(self) -> Message:
         return self.message
 
-    @overrides(Event)
+    @override
     def get_user_id(self) -> str:
         return self.user_id
 
-    @overrides(Event)
+    @override
     def get_session_id(self) -> str:
         return self.user_id
 
-    @overrides(Event)
+    @override
     def is_tome(self) -> bool:
         return self.to_me
 
@@ -128,19 +175,11 @@ class PrivateMessageEvent(MessageEvent):
 
     detail_type: Literal["private"]
 
-    @overrides(Event)
+    @override
     def get_event_description(self) -> str:
         return (
-            f'Message {self.message_id} from {self.user_id} "'
-            + "".join(
-                map(
-                    lambda x: escape_tag(str(x))
-                    if x.is_text()
-                    else f"<le>{escape_tag(str(x))}</le>",
-                    self.message,
-                )
-            )
-            + '"'
+            f"Message {self.message_id} from {self.user_id} "
+            f"{''.join(highlight_rich_message(repr(self.original_message.to_rich_text())))}"
         )
 
 
@@ -150,22 +189,14 @@ class GroupMessageEvent(MessageEvent):
     detail_type: Literal["group"]
     group_id: str
 
-    @overrides(Event)
+    @override
     def get_event_description(self) -> str:
         return (
-            f'Message {self.message_id} from {self.user_id}@[群:{self.group_id}] "'
-            + "".join(
-                map(
-                    lambda x: escape_tag(str(x))
-                    if x.is_text()
-                    else f"<le>{escape_tag(str(x))}</le>",
-                    self.message,
-                )
-            )
-            + '"'
+            f"Message {self.message_id} from {self.user_id}@[群:{self.group_id}] "
+            f"{''.join(highlight_rich_message(repr(self.original_message.to_rich_text())))}"
         )
 
-    @overrides(MessageEvent)
+    @override
     def get_session_id(self) -> str:
         return f"group_{self.group_id}_{self.user_id}"
 
@@ -177,28 +208,30 @@ class ChannelMessageEvent(MessageEvent):
     guild_id: str
     channel_id: str
 
-    @overrides(Event)
+    @override
     def get_event_description(self) -> str:
+        texts: list[str] = []
+        msg_string: list[str] = []
+        for seg in self.original_message:
+            if seg.is_text():
+                texts.append(str(seg))
+            else:
+                msg_string.extend(
+                    (escape_tag("".join(texts)), f"<le>{escape_tag(str(seg))}</le>")
+                )
+                texts.clear()
+        msg_string.append(escape_tag("".join(texts)))
         return (
             f"Message {self.message_id} from {self.user_id}@"
-            f'[群组:{self.guild_id}, 频道:{self.channel_id}] "'
-            + "".join(
-                map(
-                    lambda x: escape_tag(str(x))
-                    if x.is_text()
-                    else f"<le>{escape_tag(str(x))}</le>",
-                    self.message,
-                )
-            )
-            + '"'
+            f"[群组:{self.guild_id}, 频道:{self.channel_id}] {''.join(msg_string)!r}"
         )
 
-    @overrides(MessageEvent)
+    @override
     def get_session_id(self) -> str:
         return f"guild_{self.guild_id}_channel_{self.channel_id}_{self.user_id}"
 
 
-class NoticeEvent(Event):
+class NoticeEvent(BotEvent):
     """通知事件"""
 
     type: Literal["notice"]
@@ -223,6 +256,7 @@ class PrivateMessageDeleteEvent(NoticeEvent):
 
     detail_type: Literal["private_message_delete"]
     message_id: str
+    user_id: str
 
 
 class GroupMemberIncreaseEvent(NoticeEvent):
@@ -238,42 +272,6 @@ class GroupMemberDecreaseEvent(NoticeEvent):
     """群成员减少事件"""
 
     detail_type: Literal["group_member_decrease"]
-    group_id: str
-    user_id: str
-    operator_id: str
-
-
-class GroupMemberBanEvent(NoticeEvent):
-    """群成员禁言事件"""
-
-    detail_type: Literal["group_member_ban"]
-    group_id: str
-    user_id: str
-    operator_id: str
-
-
-class GroupMemberUnbanEvent(NoticeEvent):
-    """群成员解除禁言事件"""
-
-    detail_type: Literal["group_member_unban"]
-    group_id: str
-    user_id: str
-    operator_id: str
-
-
-class GroupAdminSetEvent(NoticeEvent):
-    """群管理员设置事件"""
-
-    detail_type: Literal["group_admin_set"]
-    group_id: str
-    user_id: str
-    operator_id: str
-
-
-class GroupAdminUnsetEvent(NoticeEvent):
-    """群管理员取消设置事件"""
-
-    detail_type: Literal["group_admin_unset"]
     group_id: str
     user_id: str
     operator_id: str
@@ -303,6 +301,26 @@ class GuildMemberDecreaseEvent(NoticeEvent):
 
     detail_type: Literal["guild_member_decrease"]
     guild_id: str
+    user_id: str
+    operator_id: str
+
+
+class ChannelMemberIncreaseEvent(NoticeEvent):
+    """频道成员增加事件"""
+
+    detail_type: Literal["channel_member_increase"]
+    guild_id: str
+    channel_id: str
+    user_id: str
+    operator_id: str
+
+
+class ChannelMemberDecreaseEvent(NoticeEvent):
+    """频道成员减少事件"""
+
+    detail_type: Literal["channel_member_decrease"]
+    guild_id: str
+    channel_id: str
     user_id: str
     operator_id: str
 
@@ -337,7 +355,7 @@ class ChannelDeleteEvent(NoticeEvent):
 
 
 # Request Events
-class RequestEvent(Event):
+class RequestEvent(BotEvent):
     """请求事件"""
 
     type: Literal["request"]
@@ -349,9 +367,29 @@ class MetaEvent(Event):
 
     type: Literal["meta"]
 
-    @overrides(Event)
+    @override
     def get_log_string(self) -> str:
         raise NoLogException
+
+
+class ImplVersion(BaseModel):
+    impl: str
+    version: str
+    onebot_version: str
+
+    if PYDANTIC_V2:
+        model_config = ConfigDict(extra="allow")
+    else:
+
+        class Config(ConfigDict):
+            extra = "allow"
+
+
+class ConnectMetaEvent(MetaEvent):
+    """连接事件"""
+
+    detail_type: Literal["connect"]
+    version: ImplVersion
 
 
 class HeartbeatMetaEvent(MetaEvent):
@@ -359,4 +397,10 @@ class HeartbeatMetaEvent(MetaEvent):
 
     detail_type: Literal["heartbeat"]
     interval: int
+
+
+class StatusUpdateMetaEvent(MetaEvent):
+    """状态更新事件"""
+
+    detail_type: Literal["status_update"]
     status: Status

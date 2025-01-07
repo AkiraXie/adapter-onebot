@@ -5,7 +5,7 @@ FrontMatter:
     description: onebot.v12.exception 模块
 """
 
-from typing import Any, Tuple, Optional
+from typing import Any, Optional
 
 from nonebot.exception import AdapterException
 from nonebot.exception import ActionFailed as BaseActionFailed
@@ -66,7 +66,7 @@ class ActionFailedWithRetcode(ActionFailed):
         kwargs: 其他实现端提供信息
     """
 
-    __retcode__: Tuple[str, ...] = ("",)
+    __retcode__: tuple[str, ...] = ("",)
 
     def __init__(
         self, status: str, retcode: int, message: str, data: Any, **kwargs: Any
@@ -177,6 +177,29 @@ class UnsupportedSegmentData(RequestError):
     """
 
     __retcode__ = ("10007",)
+
+
+class WhoAmI(RequestError):
+    """未指定机器人账号。
+
+    OneBot V12 协议错误码: 10101。
+
+    OneBot 实现在单个 OneBot Connect 连接上支持多个机器人账号，
+    但动作请求未指定要使用的账号。
+    """
+
+    __retcode__ = ("10101",)
+
+
+class UnknownSelf(RequestError):
+    """未知的机器人账号。
+
+    OneBot V12 协议错误码: 10102。
+
+    动作请求指定的机器人账号不存在。
+    """
+
+    __retcode__ = ("10102",)
 
 
 # 2xxxx

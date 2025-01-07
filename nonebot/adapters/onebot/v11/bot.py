@@ -6,10 +6,11 @@ FrontMatter:
 """
 
 import re
+from typing_extensions import override
 from typing import Any, Union, Callable
 
-from nonebot.typing import overrides
 from nonebot.message import handle_event
+from nonebot.compat import model_dump, type_validate_python
 
 from nonebot.adapters import Bot as BaseBot
 
@@ -26,25 +27,36 @@ async def _check_reply(bot: "Bot", event: MessageEvent) -> None:
         event: MessageEvent 对象
     """
     try:
-        index = list(map(lambda x: x.type == "reply", event.message)).index(True)
+        index = [x.type == "reply" for x in event.message].index(True)
     except ValueError:
         return
     msg_seg = event.message[index]
     try:
-        event.reply = Reply.parse_obj(await bot.get_msg(message_id=msg_seg.data["id"]))
+        event.reply = type_validate_python(
+            Reply, await bot.get_msg(message_id=int(msg_seg.data["id"]))
+        )
     except Exception as e:
-        log("WARNING", f"Error when getting message reply info: {repr(e)}", e)
+        log("WARNING", f"Error when getting message reply info: {e!r}")
         return
-    # ensure string comparation
-    if str(event.reply.sender.user_id) == str(event.self_id):
-        event.to_me = True
-    del event.message[index]
-    if len(event.message) > index and event.message[index].type == "at":
+
+    if event.reply.sender.user_id is not None:
+        # ensure string comparation
+        if str(event.reply.sender.user_id) == str(event.self_id):
+            event.to_me = True
         del event.message[index]
+
+        if (
+            len(event.message) > index
+            and event.message[index].type == "at"
+            and event.message[index].data.get("qq") == str(event.reply.sender.user_id)
+        ):
+            del event.message[index]
+
     if len(event.message) > index and event.message[index].type == "text":
         event.message[index].data["text"] = event.message[index].data["text"].lstrip()
         if not event.message[index].data["text"]:
             del event.message[index]
+
     if not event.message:
         event.message.append(MessageSegment.text(""))
 
@@ -120,7 +132,7 @@ def _check_nickname(bot: "Bot", event: MessageEvent) -> None:
     if first_msg_seg.type != "text":
         return
 
-    nicknames = set(filter(lambda n: n, bot.config.nickname))
+    nicknames = {re.escape(n) for n in bot.config.nickname}
     if not nicknames:
         return
 
@@ -142,7 +154,7 @@ async def send(
     **params: Any,  # extra options passed to send_msg API
 ) -> Any:
     """默认回复消息处理函数。"""
-    event_dict = event.dict()
+    event_dict = model_dump(event)
 
     if "message_id" not in event_dict:
         reply_message = False  # if no message_id, force disable reply_message
@@ -155,7 +167,11 @@ async def send(
     if "group_id" in event_dict:  # copy the group_id to the API params if exists
         params.setdefault("group_id", event_dict["group_id"])
 
-    if "message_type" not in params:  # guess the message_type
+    # guess the message_type
+    if "message_type" in event_dict:
+        params.setdefault("message_type", event_dict["message_type"])
+
+    if "message_type" not in params:
         if params.get("group_id") is not None:
             params["message_type"] = "group"
         elif params.get("user_id") is not None:
@@ -179,20 +195,21 @@ class Bot(BaseBot):
     OneBot v11 协议 Bot 适配。
     """
 
-    send_handler: Callable[
-        ["Bot", Event, Union[str, Message, MessageSegment]], Any
-    ] = send
+    send_handler: Callable[["Bot", Event, Union[str, Message, MessageSegment]], Any] = (
+        send
+    )
 
     async def handle_event(self, event: Event) -> None:
         """处理收到的事件。"""
         if isinstance(event, MessageEvent):
+            event.message.reduce()
             await _check_reply(self, event)
             _check_at_me(self, event)
             _check_nickname(self, event)
 
         await handle_event(self, event)
 
-    @overrides(BaseBot)
+    @override
     async def send(
         self,
         event: Event,
@@ -206,7 +223,8 @@ class Bot(BaseBot):
             message: 要发送的消息
             at_sender (bool): 是否 @ 事件主体
             reply_message (bool): 是否回复事件消息
-            kwargs: 其他参数，可以与 {ref}`nonebot.adapters.onebot.v11.adapter.Adapter.custom_send` 配合使用
+            kwargs: 其他参数，可以与
+                {ref}`nonebot.adapters.onebot.v11.adapter.Adapter.custom_send` 配合使用
 
         返回:
             API 调用返回数据

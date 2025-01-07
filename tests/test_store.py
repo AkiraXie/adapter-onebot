@@ -2,14 +2,13 @@ import asyncio
 
 import pytest
 
+from nonebot.adapters.onebot.store import ResultStore
+
 
 @pytest.mark.asyncio
-async def test_store(init_adapter):
-    from nonebot.adapters.onebot.store import ResultStore
-
+async def test_store():
     store = ResultStore()
 
-    self_id = "test"
     seq = store.get_seq()
     data = {"test": "test"}
     response_data = {
@@ -20,8 +19,9 @@ async def test_store(init_adapter):
     }
 
     async def feed_result():
-        store.add_result(self_id, response_data)
+        store.add_result(response_data)
 
-    asyncio.create_task(feed_result())
-    resp = await store.fetch(self_id, seq, 10.0)
+    task = asyncio.create_task(feed_result())
+    resp = await store.fetch(seq, 10.0)
+    await task
     assert resp == response_data

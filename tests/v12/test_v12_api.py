@@ -1,13 +1,12 @@
 import pytest
-from nonebug import App
+
+import nonebot
+from nonebot.adapters.onebot.v12 import Adapter, BadRequest, ActionFailedWithRetcode
 
 
 @pytest.mark.asyncio
-async def test_api_result_handle(app: App, init_adapter):
-    from nonebot import get_driver
-    from nonebot.adapters.onebot.v12 import Adapter, BadRequest, ActionFailedWithRetcode
-
-    adapter: Adapter = get_driver()._adapters[Adapter.get_name()]  # type: ignore
+async def test_api_result_handle():
+    adapter = nonebot.get_adapter(Adapter)
 
     result = adapter._handle_api_result(
         {"status": "ok", "retcode": 0, "data": "test response", "message": ""}
